@@ -3,6 +3,7 @@ import * as cookieSession from 'cookie-session';
 import * as dotenv from 'dotenv';
 import * as express from 'express';
 
+import mongoose from 'mongoose';
 import { app as authController } from './controllers/AuthController';
 import { app as callController } from './controllers/CallController';
 import { app as recordingController, proxyGETRecording } from './controllers/RecordingController';
@@ -18,7 +19,10 @@ import {
 	CALL_USER,
 	OPENVIDU_SECRET,
 	OPENVIDU_URL,
-	SERVER_PORT
+	SERVER_PORT,
+	MONGODBURL,
+	MONGOPASS,
+	MONGOUSER
 } from './config';
 
 dotenv.config();
@@ -61,4 +65,31 @@ app.listen(SERVER_PORT, () => {
 	console.log(`OpenVidu Call Server is listening on port ${SERVER_PORT}`);
 	console.log(' ');
 	console.log('---------------------------------------------------------');
+});
+
+if(MONGODBURL === null || MONGOUSER === null || MONGOPASS === null) {
+	console.log("Error: MongoDB not configured");
+	process.exit(1);
+}
+
+let optionParam = { 
+	useNewUrlParser: true,
+	useUnifiedTopology: true,
+	authSource: "admin",
+	user: MONGOUSER,
+	pass: MONGOPASS
+};
+
+mongoose.connect(MONGODBURL, optionParam, (err) => {
+
+	if(err) {
+		console.log(err);
+		process.exit(1);
+	}
+	console.log("Connected to MongoDB");
+
+	mongoose.connection.on('disconnected', () => {
+		console.log("Error: db disconnected");
+		process.exit(1);
+	});
 });

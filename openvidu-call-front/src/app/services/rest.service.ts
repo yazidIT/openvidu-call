@@ -1,8 +1,17 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 import { RecordingInfo } from 'openvidu-angular';
 import { lastValueFrom } from 'rxjs';
 
+interface SessionResponse {
+	cameraToken: string;
+	screenToken: string;
+	recordingEnabled: boolean;
+	isRecordingActive: boolean;
+	recordings?: RecordingInfo[];
+	broadcastingEnabled: boolean;
+	isBroadcastingActive: boolean;
+}
 @Injectable({
 	providedIn: 'root'
 })
@@ -21,10 +30,7 @@ export class RestService {
 		return await this.getRequest('call/config');
 	}
 
-	async getTokens(
-		sessionId: string,
-		nickname?: string
-	): Promise<{ cameraToken: string; screenToken: string; recordingEnabled: boolean; recordings?: RecordingInfo[] }> {
+	async getTokens(sessionId: string, nickname?: string): Promise<SessionResponse> {
 		return this.postRequest('sessions', { sessionId, nickname });
 	}
 	adminLogin(password: string): Promise<any[]> {
@@ -50,9 +56,22 @@ export class RestService {
 		return this.deleteRequest(`recordings/delete/${recordingId}`);
 	}
 
-	private postRequest(path: string, body: any): Promise<any> {
+	async startBroadcasting(broadcastUrl: string) {
+		const options = {
+			headers: new HttpHeaders({
+				'Content-Type': 'application/json'
+			})
+		};
+		return this.postRequest('broadcasts/start', { broadcastUrl }, options);
+	}
+
+	stopBroadcasting() {
+		return this.deleteRequest('broadcasts/stop');
+	}
+
+	private postRequest(path: string, body: any, options?: any): Promise<any> {
 		try {
-			return lastValueFrom(this.http.post<any>(this.baseHref + path, body));
+			return lastValueFrom(this.http.post<any>(this.baseHref + path, body, options));
 		} catch (error) {
 			if (error.status === 404) {
 				throw { status: error.status, message: 'Cannot connect with backend. ' + error.url + ' not found' };

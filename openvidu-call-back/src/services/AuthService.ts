@@ -20,7 +20,7 @@ export class AuthService {
 		return AuthService.instance;
 	}
 
-	authorizer = (req: Request, res: Response, next: NextFunction) => {
+	authorizer = async (req: Request, res: Response, next: NextFunction) => {
 		if (CALL_PRIVATE_ACCESS === 'ENABLED') {
 			const userAuth = req.headers.authorization;
 			const auth = Buffer.from(userAuth.split(' ')[1], 'base64').toString('ascii').split(':');
@@ -34,7 +34,7 @@ export class AuthService {
 					console.log('User does not exist');
 					return res.status(401).send('Unauthorized');
 				}
-				const validAuth = await checkPassword(pass, data.password);
+				const validAuth = await this.checkPassword(pass, data.password);
 	
 				if(validAuth) {
 					next();

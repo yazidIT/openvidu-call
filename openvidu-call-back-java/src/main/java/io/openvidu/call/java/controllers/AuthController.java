@@ -1,6 +1,5 @@
 package io.openvidu.call.java.controllers;
 
-import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -68,7 +67,7 @@ public class AuthController {
 	}
 
 	@PostMapping("/admin/login")
-	public ResponseEntity<?> adminLogin(@RequestBody(required = false) Map<String, String> params,
+	public ResponseEntity<?> adminLogin(@RequestBody(required = true) Map<String, String> params,
 			@CookieValue(name = AuthService.ADMIN_COOKIE_NAME, defaultValue = "") String adminToken,
 			HttpServletResponse res) {
 
@@ -90,8 +89,18 @@ public class AuthController {
 					cookie.setMaxAge(cookieAdminMaxAge);
 					cookie.setSecure(CALL_OPENVIDU_CERTTYPE.equals("selfsigned"));
 					res.addCookie(cookie);
+					
+					Cookie moderatorCookie = new Cookie(OpenViduService.MODERATOR_TOKEN_NAME, "");
+					moderatorCookie.setPath("/");
+					moderatorCookie.setMaxAge(0);
+					res.addCookie(moderatorCookie);
+					
+					Cookie participantCookie = new Cookie(OpenViduService.PARTICIPANT_TOKEN_NAME, "");
+					participantCookie.setPath("/");
+					participantCookie.setMaxAge(0);
+					res.addCookie(participantCookie);
 
-					AdminSessionData data = new AdminSessionData(new Date().getTime() + cookieAdminMaxAge);
+					AdminSessionData data = new AdminSessionData(System.currentTimeMillis() + cookieAdminMaxAge * 1000);
 					authService.adminSessions.put(id, data);
 				}
 				List<Recording> recordings = openviduService.listAllRecordings();
@@ -127,16 +136,13 @@ public class AuthController {
 			HttpServletResponse res) {
 		
 		authService.adminSessions.remove(adminToken);
-		for (Cookie cookie : req.getCookies()) {
-			if(cookie.getName().equals(AuthService.ADMIN_COOKIE_NAME)) {
-				cookie.setValue("");
-				cookie.setPath("/");
-				cookie.setMaxAge(0);
-				res.addCookie(cookie);
-				break;
-			}
-        }
-		return new ResponseEntity<>(null, HttpStatus.OK);
+		
+	    Cookie cookie = new Cookie(AuthService.ADMIN_COOKIE_NAME, "");
+		cookie.setPath("/");
+		cookie.setMaxAge(0);
+		res.addCookie(cookie);
+		
+		return ResponseEntity.ok().build();
 	}
 
 }

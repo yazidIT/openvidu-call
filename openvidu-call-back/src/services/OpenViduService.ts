@@ -1,9 +1,13 @@
 import { Connection, ConnectionProperties, OpenVidu, OpenViduRole, Recording, Session, SessionProperties } from 'openvidu-node-client';
 import { OPENVIDU_SECRET, OPENVIDU_URL } from '../config';
+import { RetryOptions } from '../utils';
 
 export class OpenViduService {
 	MODERATOR_TOKEN_NAME = 'ovCallModeratorToken';
-	recordingMap: Map<string, { token: string; recordingId: string }> = new Map<string, { token: string; recordingId: string }>();
+	PARTICIPANT_TOKEN_NAME = 'ovCallParticipantToken';
+	moderatorsCookieMap: Map<string, { token: string; recordingId: string }> = new Map<string, { token: string; recordingId: string }>();
+	participantsCookieMap: Map<string, string[]> = new Map<string, string[]>();
+
 	protected static instance: OpenViduService;
 	private openvidu: OpenVidu;
 	private edition: string;
@@ -26,7 +30,7 @@ export class OpenViduService {
 
 	getDateFromCookie(cookies: any): number {
 		try {
-			const cookieToken = cookies[this.MODERATOR_TOKEN_NAME];
+			const cookieToken = cookies[this.MODERATOR_TOKEN_NAME] || cookies[this.PARTICIPANT_TOKEN_NAME];
 			if (!!cookieToken) {
 				const cookieTokenUrl = new URL(cookieToken);
 				const date = cookieTokenUrl?.searchParams.get('createdAt');
@@ -41,56 +45,117 @@ export class OpenViduService {
 
 	getSessionIdFromCookie(cookies: any): string {
 		try {
-			const cookieTokenUrl = new URL(cookies[this.MODERATOR_TOKEN_NAME]);
+			const cookieToken = cookies[this.MODERATOR_TOKEN_NAME] || cookies[this.PARTICIPANT_TOKEN_NAME];
+			const cookieTokenUrl = new URL(cookieToken);
 			return cookieTokenUrl?.searchParams.get('sessionId');
 		} catch (error) {
-			console.log('Moderator cookie not found', cookies);
+			console.log('Session cookie not found', cookies);
 			console.error(error);
 			return '';
 		}
 	}
 
-	isValidToken(sessionId: string, cookies: any): boolean {
+	getSessionIdFromRecordingId(recordingId: string): string {
+		return recordingId.split('~')[0];
+	}
+
+	isModeratorSessionValid(sessionId: string, cookies: any): boolean {
 		try {
-			const storedTokenUrl = new URL(this.recordingMap.get(sessionId)?.token);
+			if (!this.moderatorsCookieMap.has(sessionId)) return false;
+			if (!cookies[this.MODERATOR_TOKEN_NAME]) return false;
+			const storedTokenUrl = new URL(this.moderatorsCookieMap.get(sessionId).token);
 			const cookieTokenUrl = new URL(cookies[this.MODERATOR_TOKEN_NAME]);
-			if (!!cookieTokenUrl && !!storedTokenUrl) {
-				const cookieSessionId = cookieTokenUrl.searchParams.get('sessionId');
-				const cookieToken = cookieTokenUrl.searchParams.get(this.MODERATOR_TOKEN_NAME);
-				const cookieDate = cookieTokenUrl.searchParams.get('createdAt');
+			const cookieSessionId = cookieTokenUrl.searchParams.get('sessionId');
+			const cookieToken = cookieTokenUrl.searchParams.get(this.MODERATOR_TOKEN_NAME);
+			const cookieDate = cookieTokenUrl.searchParams.get('createdAt');
 
-				const storedToken = storedTokenUrl.searchParams.get(this.MODERATOR_TOKEN_NAME);
-				const storedDate = storedTokenUrl.searchParams.get('createdAt');
+			const storedToken = storedTokenUrl.searchParams.get(this.MODERATOR_TOKEN_NAME);
+			const storedDate = storedTokenUrl.searchParams.get('createdAt');
 
-				return sessionId === cookieSessionId && cookieToken === storedToken && cookieDate === storedDate;
-			}
-			return false;
+			return sessionId === cookieSessionId && cookieToken === storedToken && cookieDate === storedDate;
 		} catch (error) {
 			return false;
 		}
 	}
 
-	public async createSession(sessionId: string): Promise<Session> {
-		console.log('Creating session: ', sessionId);
-		let sessionProperties: SessionProperties = { customSessionId: sessionId };
-		const session = await this.openvidu.createSession(sessionProperties);
-		await session.fetch();
-		return session;
+	isParticipantSessionValid(sessionId: string, cookies: any): boolean {
+		try {
+			if (!this.participantsCookieMap.has(sessionId)) return false;
+			if (!cookies[this.PARTICIPANT_TOKEN_NAME]) return false;
+			const storedTokens: string[] | undefined = this.participantsCookieMap.get(sessionId);
+			const cookieTokenUrl = new URL(cookies[this.PARTICIPANT_TOKEN_NAME]);
+			const cookieSessionId = cookieTokenUrl.searchParams.get('sessionId');
+			const cookieToken = cookieTokenUrl.searchParams.get(this.PARTICIPANT_TOKEN_NAME);
+			const cookieDate = cookieTokenUrl.searchParams.get('createdAt');
+
+			return (
+				storedTokens?.some((token) => {
+					const storedTokenUrl = new URL(token);
+					const storedToken = storedTokenUrl.searchParams.get(this.PARTICIPANT_TOKEN_NAME);
+					const storedDate = storedTokenUrl.searchParams.get('createdAt');
+					return sessionId === cookieSessionId && cookieToken === storedToken && cookieDate === storedDate;
+				}) ?? false
+			);
+		} catch (error) {
+			return false;
+		}
 	}
 
-	public async createConnection(session: Session, nickname: string, role: OpenViduRole): Promise<Connection> {
-		console.log(`Requesting token for session ${session.sessionId}`);
-		let connectionProperties: ConnectionProperties = { role };
-		if (!!nickname) {
-			connectionProperties.data = JSON.stringify({
-				openviduCustomConnectionId: nickname
-			});
+	public async createSession(sessionId: string, retryOptions = new RetryOptions()): Promise<Session> {
+		while (retryOptions.canRetry()) {
+			try {
+				console.log('Creating session: ', sessionId);
+				let sessionProperties: SessionProperties = { customSessionId: sessionId };
+				const session = await this.openvidu.createSession(sessionProperties);
+				await session.fetch();
+				return session;
+			} catch (error) {
+				const status = error.message;
+				if ((status >= 500 && status <= 504) || status == 404) {
+					// Retry is used for OpenVidu Enterprise High Availability for reconnecting purposes
+					// to allow fault tolerance
+					// 502 to 504 are returned when OpenVidu Server is not available (stopped, not reachable, etc...)
+					// 404 is returned when the session does not exist which is returned by fetch operation in createSession
+					// and it is not a possible error after session creation
+					console.log('Error creating session: ', status, 'Retrying session creation...', retryOptions);
+					await retryOptions.retrySleep();
+				} else {
+					console.log("Unknown error creating session: ", error);
+					throw error;
+				}
+			}
 		}
-		console.log('Connection Properties:', connectionProperties);
-		const connection = await session.createConnection(connectionProperties);
-		this.edition = new URL(connection.token).searchParams.get('edition');
+		throw new Error('Max retries exceeded while creating connection');
+	}
 
-		return connection;
+	public async createConnection(session: Session, nickname: string, role: OpenViduRole, retryOptions = new RetryOptions()): Promise<Connection> {
+		while (retryOptions.canRetry()) {
+			try {
+				console.log(`Requesting token for session ${session.sessionId}`);
+				let connectionProperties: ConnectionProperties = { role };
+				if (!!nickname) {
+					connectionProperties.data = JSON.stringify({
+						openviduCustomConnectionId: nickname
+					});
+				}
+				console.log('Connection Properties:', connectionProperties);
+				const connection = await session.createConnection(connectionProperties);
+				this.edition = new URL(connection.token).searchParams.get('edition');
+				return connection;
+			} catch (error) {
+				const status = Number(error.message);
+				if (status >= 500 && status <= 504) {
+					// Retry is used for OpenVidu Enterprise High Availability for reconnecting purposes
+					// to allow fault tolerance
+					console.log('Error creating connection: ', status, 'Retrying connection creation...', retryOptions);
+					await retryOptions.retrySleep();
+				} else {
+					console.log("Unknown error creating connection: ", error);
+					throw error;
+				}
+			}
+		}
+		throw new Error('Max retries exceeded while creating connection');
 	}
 
 	public async startRecording(sessionId: string): Promise<Recording> {
@@ -114,7 +179,10 @@ export class OpenViduService {
 
 	public async listRecordingsBySessionIdAndDate(sessionId: string, date: number) {
 		const recordingList: Recording[] = await this.listAllRecordings();
-		return recordingList.filter((recording) => recording.sessionId === sessionId && date <= recording.createdAt);
+		return recordingList.filter((recording) => {
+			const recordingDateEnd = recording.createdAt + recording.duration * 1000;
+			return recording.sessionId === sessionId && recordingDateEnd >= date;
+		});
 	}
 
 	public async startBroadcasting(sessionId: string, url: string): Promise<void> {

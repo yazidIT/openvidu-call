@@ -38,6 +38,8 @@ app.post('/admin/login', async (req: Request, res: Response) => {
 					maxAge: cookieAdminMaxAge,
 					secure: CALL_OPENVIDU_CERTTYPE !== 'selfsigned'
 				});
+				res.cookie(openviduService.PARTICIPANT_TOKEN_NAME, '', { maxAge: 0 });
+				res.cookie(openviduService.MODERATOR_TOKEN_NAME, '', { maxAge: 0 });
 				authService.adminSessions.set(id, { expires: new Date().getTime() + cookieAdminMaxAge });
 			}
 			const recordings = await openviduService.listAllRecordings();
@@ -61,7 +63,6 @@ app.post('/admin/login', async (req: Request, res: Response) => {
 app.post('/admin/logout', async (req: Request, res: Response) => {
 	const adminSessionId = req.cookies[authService.ADMIN_COOKIE_NAME];
 	authService.adminSessions.delete(adminSessionId);
-	res.cookie(authService.ADMIN_COOKIE_NAME, null);
-	res.status(200).send("Logout");
-	res.end();
+	res.cookie(authService.ADMIN_COOKIE_NAME, '', { maxAge: 0 });
+	return  res.status(200).send(JSON.stringify({ message: 'Logout succeded' }));
 });

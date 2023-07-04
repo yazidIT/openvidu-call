@@ -14,6 +14,8 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import io.openvidu.call.java.models.RecordingData;
+import io.openvidu.call.java.utils.RetryException;
+import io.openvidu.call.java.utils.RetryOptions;
 import io.openvidu.java.client.Connection;
 import io.openvidu.java.client.ConnectionProperties;
 import io.openvidu.java.client.OpenVidu;
@@ -28,8 +30,9 @@ import io.openvidu.java.client.SessionProperties;
 public class OpenViduService {
 
 	public static final String MODERATOR_TOKEN_NAME = "ovCallModeratorToken";
-	public Map<String, RecordingData> recordingMap = new HashMap<String, RecordingData>();
-	public Map<String, String> streamingMap = new HashMap<String, String>();
+	public static final String PARTICIPANT_TOKEN_NAME = "ovCallParticipantToken";
+	public Map<String, RecordingData> moderatorsCookieMap = new HashMap<String, RecordingData>();
+	public Map<String, List<String>> participantsCookieMap = new HashMap<String, List<String>>();
 
 	@Value("${OPENVIDU_URL}")
 	public String OPENVIDU_URL;
@@ -85,57 +88,121 @@ public class OpenViduService {
 			}
 
 		} catch (Exception error) {
-			System.out.println("Moderator cookie not found");
+			System.out.println("Session cookie not found");
 			System.err.println(error);
 		}
 		return "";
 
 	}
 
-	public boolean isValidToken(String sessionId, String token) {
+	public String getSessionIdFromRecordingId(String recordingId) {
+		return recordingId.split("~")[0];
+	}
+
+	public boolean isModeratorSessionValid(String sessionId, String token) {
 		try {
 
-			if (!token.isEmpty()) {
-				MultiValueMap<String, String> storedTokenParams = null;
+			if(token.isEmpty()) return false;
+			if(!this.moderatorsCookieMap.containsKey(sessionId)) return false;
 
-				if (this.recordingMap.containsKey(sessionId)) {
-					storedTokenParams = UriComponentsBuilder
-							.fromUriString(this.recordingMap.get(sessionId).getToken()).build().getQueryParams();
-				}
+			MultiValueMap<String, String> storedTokenParams = UriComponentsBuilder
+					.fromUriString(this.moderatorsCookieMap.get(sessionId).getToken()).build().getQueryParams();
 
-				MultiValueMap<String, String> cookieTokenParams = UriComponentsBuilder
-						.fromUriString(token).build().getQueryParams();
+			MultiValueMap<String, String> cookieTokenParams = UriComponentsBuilder
+					.fromUriString(token).build().getQueryParams();
 
-				if (!cookieTokenParams.isEmpty() && storedTokenParams != null) {
-					String cookieSessionId = cookieTokenParams.get("sessionId").get(0);
-					String cookieToken = cookieTokenParams.get(MODERATOR_TOKEN_NAME).get(0);
-					String cookieDate = cookieTokenParams.get("createdAt").get(0);
+			String cookieSessionId = cookieTokenParams.get("sessionId").get(0);
+			String cookieToken = cookieTokenParams.get(MODERATOR_TOKEN_NAME).get(0);
+			String cookieDate = cookieTokenParams.get("createdAt").get(0);
 
-					String storedToken = storedTokenParams.get(MODERATOR_TOKEN_NAME).get(0);
-					String storedDate = storedTokenParams.get("createdAt").get(0);
+			String storedToken = storedTokenParams.get(MODERATOR_TOKEN_NAME).get(0);
+			String storedDate = storedTokenParams.get("createdAt").get(0);
 
-					return sessionId.equals(cookieSessionId) && cookieToken.equals(storedToken)
-							&& cookieDate.equals(storedDate);
-				}
-			}
+			return sessionId.equals(cookieSessionId) && cookieToken.equals(storedToken)
+					&& cookieDate.equals(storedDate);
 
-			return false;
 		} catch (Exception e) {
 			return false;
 		}
 	}
 
-	public Session createSession(String sessionId) throws OpenViduJavaClientException, OpenViduHttpException {
-		Map<String, Object> params = new HashMap<String, Object>();
-		params.put("customSessionId", sessionId);
-		SessionProperties properties = SessionProperties.fromJson(params).build();
-		Session session = openvidu.createSession(properties);
-		session.fetch();
-		return session;
+	public boolean isParticipantSessionValid(String sessionId, String cookie) {
+
+		try {
+			if (!this.participantsCookieMap.containsKey(sessionId))	return false;
+			if(cookie.isEmpty()) return false;
+
+
+			MultiValueMap<String, String> cookieTokenParams = UriComponentsBuilder
+					.fromUriString(cookie).build().getQueryParams();
+
+			List<String> storedTokens = this.participantsCookieMap.get(sessionId);
+
+			String cookieSessionId = cookieTokenParams.get("sessionId").get(0);
+			String cookieToken = cookieTokenParams.get(PARTICIPANT_TOKEN_NAME).get(0);
+			String cookieDate = cookieTokenParams.get("createdAt").get(0);
+
+			for (String token : storedTokens) {
+				MultiValueMap<String, String> storedTokenParams = UriComponentsBuilder
+					.fromUriString(token).build().getQueryParams();
+
+				String storedToken = storedTokenParams.get(PARTICIPANT_TOKEN_NAME).get(0);
+				String storedDate = storedTokenParams.get("createdAt").get(0);
+
+				if (sessionId.equals(cookieSessionId) && cookieToken.equals(storedToken) && cookieDate.equals(storedDate)) {
+					return true;
+				}
+			}
+
+			return false;
+
+		} catch (Exception e) {
+			return false;
+		}
+	}
+
+	public Session createSession(String sessionId)
+			throws OpenViduJavaClientException, OpenViduHttpException, InterruptedException, RetryException {
+		RetryOptions retryOptions = new RetryOptions();
+		return createSession(sessionId, retryOptions);
+	}
+
+	private Session createSession(String sessionId, RetryOptions retryOptions)
+			throws OpenViduJavaClientException, OpenViduHttpException, InterruptedException, RetryException {
+		while(retryOptions.canRetry()) {
+			try {
+				Map<String, Object> params = new HashMap<String, Object>();
+				params.put("customSessionId", sessionId);
+				SessionProperties properties = SessionProperties.fromJson(params).build();
+				Session session = openvidu.createSession(properties);
+				session.fetch();
+				return session;
+			} catch (OpenViduHttpException e) {
+				if ((e.getStatus() >= 500 && e.getStatus() <= 504) || e.getStatus() == 404) {
+					// Retry is used for OpenVidu Enterprise High Availability for reconnecting purposes
+					// to allow fault tolerance
+					// 502 to 504 are returned when OpenVidu Server is not available (stopped, not reachable, etc...)
+					// 404 is returned when the session does not exist which is returned by fetch operation in createSession
+					// and it is not a possible error after session creation
+					System.err.println("Error creating session: " + e.getMessage()
+						+ ". Retrying session creation..." + retryOptions.toString());
+					retryOptions.retrySleep();
+				} else {
+					System.err.println("Error creating session: " + e.getMessage());
+					throw e;
+				}
+			}
+		}
+		throw new RetryException("Max retries exceeded");
 	}
 
 	public Connection createConnection(Session session, String nickname, OpenViduRole role)
-			throws OpenViduJavaClientException, OpenViduHttpException {
+			throws OpenViduJavaClientException, OpenViduHttpException, RetryException, InterruptedException {
+		return createConnection(session, nickname, role, new RetryOptions());
+	}
+
+	private Connection createConnection(Session session, String nickname, OpenViduRole role, RetryOptions retryOptions)
+			throws OpenViduJavaClientException, OpenViduHttpException, RetryException, InterruptedException {
 		Map<String, Object> params = new HashMap<String, Object>();
 		Map<String, Object> connectionData = new HashMap<String, Object>();
 
@@ -146,12 +213,37 @@ public class OpenViduService {
 		params.put("data", connectionData.toString());
 		ConnectionProperties properties = ConnectionProperties.fromJson(params).build();
 
-		Connection connection = session.createConnection(properties);
+		Connection connection = null;
+		while (retryOptions.canRetry()) {
+			try {
+				connection = session.createConnection(properties);
+				break;
+			} catch (OpenViduHttpException e) {
+				if (e.getStatus() >= 500 && e.getStatus() <= 504) {
+					// Retry is used for OpenVidu Enterprise High Availability for reconnecting purposes
+					// to allow fault tolerance
+					System.err.println("Error creating connection: " + e.getMessage()
+						+ ". Retrying connection creation..." + retryOptions.toString());
+					retryOptions.retrySleep();
+				} else {
+					System.err.println("Error creating connection: " + e.getMessage());
+					throw e;
+				}
+			}
+		}
+
+		if (connection == null) {
+			throw new RetryException("Max retries exceeded");
+		}
 
 		MultiValueMap<String, String> tokenParams = UriComponentsBuilder
 				.fromUriString(connection.getToken()).build().getQueryParams();
-		;
-		this.edition = tokenParams.get("edition").get(0);
+
+		if (tokenParams.containsKey("edition")) {
+			this.edition = tokenParams.get("edition").get(0);
+		} else {
+			this.edition = "ce";
+		}
 
 		return connection;
 
@@ -182,7 +274,7 @@ public class OpenViduService {
 		List<Recording> recordings = this.listAllRecordings();
 		List<Recording> recordingsAux = new ArrayList<Recording>();
 		for (Recording recording : recordings) {
-			if (recording.getSessionId().equals(sessionId) && date <= recording.getCreatedAt()) {
+			if (recording.getSessionId().equals(sessionId) && recording.getCreatedAt() + recording.getDuration() * 1000 >= date) {
 				recordingsAux.add(recording);
 			}
 		}

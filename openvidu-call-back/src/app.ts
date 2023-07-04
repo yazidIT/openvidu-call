@@ -1,5 +1,4 @@
 import * as cookieParser from 'cookie-parser';
-
 import * as dotenv from 'dotenv';
 import * as express from 'express';
 
@@ -39,7 +38,7 @@ app.use(cookieParser());
 app.use('/call', callController);
 app.use('/sessions', authService.authorizer, sessionController);
 app.use('/recordings', authService.authorizer, recordingController);
-app.use('/recordings/:recordingId', authService.authorizer, proxyGETRecording);
+app.use('/recordings/:recordingId', proxyGETRecording);
 app.use('/broadcasts', authService.authorizer, broadcastController);
 app.use('/auth', authController);
 
